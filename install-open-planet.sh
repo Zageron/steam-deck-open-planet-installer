@@ -104,24 +104,46 @@ set_dll_override()
 {
 	local user_reg="$1"
 	local registry_temp
+	local user_reg_dir="${user_reg%/user.reg}"
 
-	[[ -f "$user_reg" ]] || return 1
-	[[ -n "$(sed -nE '/^\[Software\\\\Wine\\\\DllOverrides\]/p' "$user_reg")" ]] || return 1
+	[[ -d "$user_reg_dir" ]] || return 1
 	registry_temp="$(mktemp "$user_reg.XXXXXX")" || return 1
 
-	if [[ -n "$(sed -nE \
-		'/^\[Software\\\\Wine\\\\DllOverrides\]/,/^\[/ { /^\"dinput8\"=/p; }' \
-		"$user_reg")" ]]; then
-		if ! sed -E \
-			'/^\[Software\\\\Wine\\\\DllOverrides\]/,/^\[/ s/^\"dinput8\"=.*/\"dinput8\"=\"native,builtin\"/' \
-			"$user_reg" > "$registry_temp"; then
+	if [[ ! -f "$user_reg" ]]; then
+		if ! printf '%s\n' \
+			'WINE REGISTRY Version 2' \
+			'' \
+			'[Software\\Wine\\DllOverrides]' \
+			'"dinput8"="native,builtin"' > "$registry_temp"; then
 			rm -f "$registry_temp"
 			return 1
 		fi
+	elif [[ -n "$(sed -nE \
+		'/^\[Software\\\\Wine\\\\DllOverrides\]/p' \
+		"$user_reg")" ]]; then
+		if [[ -n "$(sed -nE \
+			'/^\[Software\\\\Wine\\\\DllOverrides\]/,/^\[/ { /^\"dinput8\"=/p; }' \
+			"$user_reg")" ]]; then
+			if ! sed -E \
+				'/^\[Software\\\\Wine\\\\DllOverrides\]/,/^\[/ s/^\"dinput8\"=.*/\"dinput8\"=\"native,builtin\"/' \
+				"$user_reg" > "$registry_temp"; then
+				rm -f "$registry_temp"
+				return 1
+			fi
+		else
+			if ! sed -E \
+				'/^\[Software\\\\Wine\\\\DllOverrides\]/a \"dinput8\"=\"native,builtin\"' \
+				"$user_reg" > "$registry_temp"; then
+				rm -f "$registry_temp"
+				return 1
+			fi
+		fi
 	else
-		if ! sed -E \
-			'/^\[Software\\\\Wine\\\\DllOverrides\]/a \"dinput8\"=\"native,builtin\"' \
-			"$user_reg" > "$registry_temp"; then
+		if ! sed -n 'p' "$user_reg" > "$registry_temp" ||
+			! printf '%s\n' \
+				'' \
+				'[Software\\Wine\\DllOverrides]' \
+				'"dinput8"="native,builtin"' >> "$registry_temp"; then
 			rm -f "$registry_temp"
 			return 1
 		fi
@@ -220,7 +242,17 @@ info "Trackmania: $TRACKMANIA_DIR"
 info "Trackmania manifest: $APP_MANIFEST"
 
 GAME_LIBRARY="${APP_MANIFEST%/steamapps/appmanifest_"${APPID}".acf}"
-COMPAT_DATA_PATH="$GAME_LIBRARY/steamapps/compatdata/$APPID"
+COMPAT_DATA_PATH=""
+for library in "${LIBRARIES[@]}"; do
+	candidate="$library/steamapps/compatdata/$APPID"
+	if [[ -d "$candidate/pfx" ]]; then
+		COMPAT_DATA_PATH="$candidate"
+		break
+	fi
+done
+if [[ -z "$COMPAT_DATA_PATH" ]]; then
+	COMPAT_DATA_PATH="$GAME_LIBRARY/steamapps/compatdata/$APPID"
+fi
 USER_REG="$COMPAT_DATA_PATH/pfx/user.reg"
 
 OPENPLANET_DIR="$TRACKMANIA_DIR/Openplanet"
@@ -367,7 +399,7 @@ info "Openplanet payload: $PAYLOAD_ROOT"
 
 warn "Set the Proton dinput8 override."
 if ! set_dll_override "$USER_REG"; then
-	die "The script did not set the Proton dinput8 override. Start Trackmania once with Proton, then start this script again."
+	die "The Proton prefix was not found or could not be updated. Start Trackmania once with Proton, close it, then start this script again."
 fi
 info "Proton dinput8 override: native,builtin"
 
