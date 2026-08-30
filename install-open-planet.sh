@@ -90,6 +90,49 @@ read_vdf()
 		"$2"
 }
 
+has_dll_override()
+{
+	local user_reg="$1"
+
+	[[ -f "$user_reg" ]] &&
+		[[ -n "$(sed -nE \
+			'/^\[Software\\\\Wine\\\\DllOverrides\]/,/^\[/ { /^\"dinput8\"=\"native,builtin\"$/p; }' \
+			"$user_reg")" ]]
+}
+
+set_dll_override()
+{
+	local user_reg="$1"
+	local registry_temp
+
+	[[ -f "$user_reg" ]] || return 1
+	[[ -n "$(sed -nE '/^\[Software\\\\Wine\\\\DllOverrides\]/p' "$user_reg")" ]] || return 1
+	registry_temp="$(mktemp "$user_reg.XXXXXX")" || return 1
+
+	if [[ -n "$(sed -nE \
+		'/^\[Software\\\\Wine\\\\DllOverrides\]/,/^\[/ { /^\"dinput8\"=/p; }' \
+		"$user_reg")" ]]; then
+		if ! sed -E \
+			'/^\[Software\\\\Wine\\\\DllOverrides\]/,/^\[/ s/^\"dinput8\"=.*/\"dinput8\"=\"native,builtin\"/' \
+			"$user_reg" > "$registry_temp"; then
+			rm -f "$registry_temp"
+			return 1
+		fi
+	else
+		if ! sed -E \
+			'/^\[Software\\\\Wine\\\\DllOverrides\]/a \"dinput8\"=\"native,builtin\"' \
+			"$user_reg" > "$registry_temp"; then
+			rm -f "$registry_temp"
+			return 1
+		fi
+	fi
+
+	if ! mv "$registry_temp" "$user_reg"; then
+		rm -f "$registry_temp"
+		return 1
+	fi
+}
+
 STEAM_CANDIDATES=(
 	"$HOME/.steam/steam"
 	"$HOME/.steam/root"
@@ -176,18 +219,33 @@ fi
 info "Trackmania: $TRACKMANIA_DIR"
 info "Trackmania manifest: $APP_MANIFEST"
 
-OPENPLANET_DIR="$TRACKMANIA_DIR/OpenplanetNext"
+GAME_LIBRARY="${APP_MANIFEST%/steamapps/appmanifest_"${APPID}".acf}"
+COMPAT_DATA_PATH="$GAME_LIBRARY/steamapps/compatdata/$APPID"
+USER_REG="$COMPAT_DATA_PATH/pfx/user.reg"
+
+OPENPLANET_DIR="$TRACKMANIA_DIR/Openplanet"
 LOADER_FILE="$TRACKMANIA_DIR/dinput8.dll"
+OPENPLANET_MODULE_FILE="$TRACKMANIA_DIR/Openplanet.dll"
 
 if [[ -e "$OPENPLANET_DIR" ]]; then
-	info "OpenplanetNext: $OPENPLANET_DIR"
+	info "Openplanet: $OPENPLANET_DIR"
 else
-	info "OpenplanetNext: None"
+	info "Openplanet: None"
 fi
 if [[ -e "$LOADER_FILE" ]]; then
 	info "dinput8.dll: $LOADER_FILE"
 else
 	info "dinput8.dll: None"
+fi
+if [[ -e "$OPENPLANET_MODULE_FILE" ]]; then
+	info "Openplanet.dll: $OPENPLANET_MODULE_FILE"
+else
+	info "Openplanet.dll: None"
+fi
+if has_dll_override "$USER_REG"; then
+	info "Proton dinput8 override: native,builtin"
+else
+	info "Proton dinput8 override: None"
 fi
 
 if [[ "$STATUS_ONLY" -eq 1 ]]; then
@@ -196,9 +254,13 @@ fi
 
 if [[ -d "$OPENPLANET_DIR" ]] &&
 	[[ -f "$LOADER_FILE" ]] &&
+	[[ -f "$OPENPLANET_MODULE_FILE" ]] &&
    [[ "$FORCE" -eq 0 ]]; then
-	warn "Openplanet is already installed. Use --force to install again."
-	exit 0
+	if has_dll_override "$USER_REG"; then
+		warn "Openplanet is already installed. Use --force to install again."
+		exit 0
+	fi
+	warn "Openplanet is installed, but the Proton dinput8 override is missing."
 fi
 
 TMP_ROOT="$(mktemp -d)"
@@ -293,6 +355,9 @@ OPENPLANET_DLL="$(
 	die "The archive does not contain dinput8.dll."
 
 PAYLOAD_ROOT="${OPENPLANET_DLL%/*}"
+OPENPLANET_MODULE_SOURCE="$PAYLOAD_ROOT/Openplanet.dll"
+[[ -f "$OPENPLANET_MODULE_SOURCE" ]] ||
+	die "The archive does not contain Openplanet.dll."
 OPENPLANET_PAYLOAD="$PAYLOAD_ROOT/Openplanet"
 [[ -d "$OPENPLANET_PAYLOAD" ]] ||
 	die "The archive does not contain Openplanet files."
@@ -300,12 +365,18 @@ OPENPLANET_PAYLOAD="$PAYLOAD_ROOT/Openplanet"
 	die "The Openplanet payload does not contain files."
 info "Openplanet payload: $PAYLOAD_ROOT"
 
+warn "Set the Proton dinput8 override."
+if ! set_dll_override "$USER_REG"; then
+	die "The script did not set the Proton dinput8 override. Start Trackmania once with Proton, then start this script again."
+fi
+info "Proton dinput8 override: native,builtin"
+
 BACKUP_DIR=""
-if [[ -e "$OPENPLANET_DIR" || -e "$LOADER_FILE" ]]; then
+if [[ -e "$OPENPLANET_DIR" || -e "$LOADER_FILE" || -e "$OPENPLANET_MODULE_FILE" ]]; then
 	BACKUP_DIR="$(mktemp -d "$TRACKMANIA_DIR/.openplanet-backup.XXXXXX")"
 	warn "Back up the current Openplanet files."
 
-	for path in "$OPENPLANET_DIR" "$LOADER_FILE"; do
+	for path in "$OPENPLANET_DIR" "$LOADER_FILE" "$OPENPLANET_MODULE_FILE"; do
 		[[ -e "$path" ]] && cp -a "$path" "$BACKUP_DIR/"
 	done
 fi
@@ -315,11 +386,14 @@ warn "Install Openplanet."
 mkdir -p "$OPENPLANET_DIR"
 cp -a "$OPENPLANET_PAYLOAD/." "$OPENPLANET_DIR/"
 cp -a "$PAYLOAD_ROOT/dinput8.dll" "$LOADER_FILE"
+cp -a "$OPENPLANET_MODULE_SOURCE" "$OPENPLANET_MODULE_FILE"
 
-[[ -d "$OPENPLANET_DIR" && -f "$LOADER_FILE" && -r "$LOADER_FILE" ]] ||
+[[ -d "$OPENPLANET_DIR" && -f "$LOADER_FILE" && -r "$LOADER_FILE" &&
+	-f "$OPENPLANET_MODULE_FILE" && -r "$OPENPLANET_MODULE_FILE" ]] ||
 	die "The Openplanet files are not complete."
-info "Installed OpenplanetNext: $OPENPLANET_DIR"
+info "Installed Openplanet: $OPENPLANET_DIR"
 info "Installed dinput8.dll: $LOADER_FILE"
+info "Installed Openplanet.dll: $OPENPLANET_MODULE_FILE"
 
 echo
 echo "Openplanet is ready."
