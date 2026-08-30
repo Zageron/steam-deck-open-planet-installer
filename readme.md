@@ -3,12 +3,10 @@
 Install Openplanet for the Steam version of Trackmania on Steam Deck or Linux.
 
 > [!WARNING]
-> Read the disclaimer below before you use this script.
-
-## Disclaimer
-
-- GitHub Copilot used GPT-5.6 Luna to generate this script.
-- ASD-STE100 for short and clear text.
+> **Disclaimer**
+>
+> - GitHub Copilot used GPT-5.6 Luna to generate this script.
+> - ASD-STE100 for short and clear text.
 
 ## Purpose
 
